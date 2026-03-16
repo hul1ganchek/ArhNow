@@ -6,16 +6,9 @@ from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandle
 BOT_TOKEN = "8500696080:AAGjjcMHCdgjBxAgA40qI3CziyQHaHwXvSs"
 BASE_URL = "https://m.arhcity.ru/"
 START_PAGES = [
-    {
-        "title": "Инвестиционная деятельность",
-        "url": BASE_URL + "?page=1472/0"
-    },
-    {
-        "title": "Торги",
-        "url": BASE_URL + "?page=680/0"
-    }
+    {"title": "Инвестиционная деятельность", "url": BASE_URL + "?page=1472/0"},
+    {"title": "Торги", "url": BASE_URL + "?page=680/0"}
 ]
-DESCRIPTION_CACHE = {}
 
 async def fetch_html(url):
     async with aiohttp.ClientSession() as session:
@@ -24,17 +17,10 @@ async def fetch_html(url):
 
 def format_page_text(pagebody):
     lines = []
-
     for tag in pagebody.find_all(["p", "li"]):
         text = tag.get_text(" ", strip=True)
-        if not text:
-            continue
-
-        if len(text) < 3:
-            continue
-
-        lines.append(text)
-
+        if text and len(text) > 2:
+            lines.append(text)
     return "\n\n".join(lines)
 
 async def parse_page(url):
@@ -80,47 +66,38 @@ async def parse_page(url):
         a = p.find("a", href=True)
         if not a:
             continue
-
         title = a.get_text(strip=True)
         href = a["href"]
-
         if href.startswith("/"):
             href = BASE_URL + href.lstrip("/")
         elif href.startswith("?"):
             href = BASE_URL + href
         if " " in href:
             href = href.replace(" ", "%20")
-
         files.append({"title": title, "url": href, "type": "file"})
 
     return folders, files
 
 async def show_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, folders, files, path_title):
     keyboard = []
-
     for i, f in enumerate(folders):
         key = f"folder_{i}"
         context.user_data[key] = f
         keyboard.append([InlineKeyboardButton(f"📁 {f['title']}", callback_data=key)])
-
     for i, f in enumerate(files):
         key = f"file_{i}"
         context.user_data[key] = f
         keyboard.append([InlineKeyboardButton(f"📎 {f['title']}", callback_data=key)])
-
     if context.user_data.get("history"):
         keyboard.append([InlineKeyboardButton("⬅️ Назад", callback_data="back")])
-
     if path_title not in ("Инвестиционная деятельность", "Торги"):
         keyboard.append([InlineKeyboardButton("🏠 Главное меню", callback_data="main")])
-
     markup = InlineKeyboardMarkup(keyboard)
-
     if update.callback_query:
         await update.callback_query.message.edit_text(path_title, reply_markup=markup)
     else:
         await update.message.reply_text(path_title, reply_markup=markup)
-        
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     context.user_data["history"] = []
@@ -128,26 +105,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = []
     for i, page in enumerate(START_PAGES):
         key = f"root_{i}"
-        context.user_data[key] = {
-            "title": page["title"],
-            "url": page["url"],
-            "type": "folder"
-        }
+        context.user_data[key] = {"title": page["title"], "url": page["url"], "type": "folder"}
         keyboard.append([InlineKeyboardButton(page["title"], callback_data=key)])
 
     markup = InlineKeyboardMarkup(keyboard)
-
     if update.callback_query:
-        await update.callback_query.message.edit_text(
-            "Главное меню",
-            reply_markup=markup
-        )
+        await update.callback_query.message.edit_text("Главное меню", reply_markup=markup)
     else:
-        await update.message.reply_text(
-            "Главное меню",
-            reply_markup=markup
-        )
-        
+        await update.message.reply_text("Главное меню", reply_markup=markup)
+
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -157,11 +123,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         item = context.user_data.get(data)
         if not item:
             return
-
-        context.user_data["history"] = [
-            {"title": item["title"], "url": item["url"]}
-        ]
-
+        context.user_data["history"] = [{"title": item["title"], "url": item["url"]}]
         folders, files = await parse_page(item["url"])
         await show_menu(update, context, folders, files, item["title"])
         return
@@ -172,14 +134,11 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "back":
         history = context.user_data.get("history", [])
-
         if len(history) < 2:
             await start(update, context)
             return
-
         history.pop()
         last = history[-1]
-
         folders, files = await parse_page(last["url"])
         await show_menu(update, context, folders, files, last["title"])
         return
@@ -191,22 +150,16 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if item["type"] == "file":
         url = item["url"]
-
-        if url in DESCRIPTION_CACHE:
-            description = DESCRIPTION_CACHE[url]
-        else:
-            description = ""
-            if url.startswith(BASE_URL + "?page="):
-                try:
-                    page_html = await fetch_html(url)
-                    page_soup = BeautifulSoup(page_html, "html.parser")
-                    page_content = page_soup.find("div", class_="pagebody")
-                    if page_content:
-                        description = format_page_text(page_content)
-                except Exception:
-                    description = ""
-
-            DESCRIPTION_CACHE[url] = description
+        description = ""
+        if url.startswith(BASE_URL + "?page="):
+            try:
+                page_html = await fetch_html(url)
+                page_soup = BeautifulSoup(page_html, "html.parser")
+                page_content = page_soup.find("div", class_="pagebody")
+                if page_content:
+                    description = format_page_text(page_content)
+            except Exception:
+                description = ""
 
         text = f"📎 <b>{item['title']}</b>\n{url}"
         if description:
@@ -217,20 +170,15 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("🏠 Главное меню", callback_data="main")]
         ])
 
-        await query.edit_message_text(
-            text,
-            parse_mode="HTML",
-            reply_markup=markup
-        )
+        await query.edit_message_text(text, parse_mode="HTML", reply_markup=markup)
         return
 
     if item["type"] == "folder":
         history = context.user_data.setdefault("history", [])
         history.append({"title": item["title"], "url": item["url"]})
-
         folders, files = await parse_page(item["url"])
         await show_menu(update, context, folders, files, item["title"])        
-        
+
 if __name__ == "__main__":
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
