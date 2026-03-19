@@ -166,20 +166,33 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 page_content = page_soup.find("div", class_="pagebody")
                 if page_content:
                     description = format_page_text(page_content)
-            except Exception:
+            except Exception as e:
                 description = ""
+                print(f"Ошибка при загрузке страницы: {e}")
 
-        text = f"📎 <b>{item['title']}</b>\n{url}"
-        if description:
-            text += f"\n\n{description}"
+        try:
+            text = f"📎 <b>{item['title']}</b>\n{url}"
+            if description:
+                text += f"\n\n{description}"
 
-        markup = InlineKeyboardMarkup([
-            [InlineKeyboardButton("⬅️ Назад", callback_data="back")],
-            [InlineKeyboardButton("🏠 Главное меню", callback_data="main")]
-        ])
+            markup = InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅️ Назад", callback_data="back")],
+                [InlineKeyboardButton("🏠 Главное меню", callback_data="main")]
+            ])
 
-        await query.edit_message_text(text, parse_mode="HTML", reply_markup=markup)
+            await query.edit_message_text(text, parse_mode="HTML", reply_markup=markup)
+        except Exception as e:
+            await query.edit_message_text(
+                "Произошла ошибка при отображении документа.\nПопробуйте позже."
+            )
+            print(f"Ошибка отправки сообщения: {e}")
         return
+
+    if item["type"] == "folder":
+        history = context.user_data.setdefault("history", [])
+        history.append({"title": item["title"], "url": item["url"]})
+        folders, files = await parse_page(item["url"])
+        await show_menu(update, context, folders, files, item["title"])return
 
     if item["type"] == "folder":
         history = context.user_data.setdefault("history", [])
