@@ -1,4 +1,4 @@
-import aiohttp
+   import aiohttp
 from bs4 import BeautifulSoup
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
@@ -11,9 +11,17 @@ START_PAGES = [
 ]
 
 async def fetch_html(url):
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url) as resp:
-            return await resp.text()
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as resp:
+                resp.raise_for_status()  
+                return await resp.text()
+    except aiohttp.ClientError as e:
+        print(f"Ошибка при подключении к {url}: {e}")
+        return ""
+    except Exception as e:
+        print(f"Неожиданная ошибка при получении HTML: {e}")
+        return ""
 
 def format_page_text(pagebody):
     lines = []
