@@ -1,208 +1,177 @@
-   import aiohttp
-from bs4 import BeautifulSoup
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
+import aiohttp
+from selectolax.parser import HTMLParser
+from aiogram import Bot, Dispatcher, Router, F
+from aiogram.types import Message, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.filters import Command
+from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
+from aiohttp import web
 
-BOT_TOKEN = "8500696080:AAGjjcMHCdgjBxAgA40qI3CziyQHaHwXvSs"
 BASE_URL = "https://m.arhcity.ru/"
+
 START_PAGES = [
-    {"title": "Инвестиционная деятельность", "url": BASE_URL + "?page=1472/0"},
-    {"title": "Торги", "url": BASE_URL + "?page=680/0"}
+    ("Инвестиционная деятельность", BASE_URL + "?page=1472/0"),
+    ("Торги", BASE_URL + "?page=680/0")
 ]
 
-async def fetch_html(url):
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url) as resp:
-                resp.raise_for_status()  
-                return await resp.text()
-    except aiohttp.ClientError as e:
-        print(f"Ошибка при подключении к {url}: {e}")
-        return ""
-    except Exception as e:
-        print(f"Неожиданная ошибка при получении HTML: {e}")
-        return ""
+WEBHOOK_PATH = "/webhook"
+WEBHOOK_URL = "https://arhnow.bothost/webhook"
 
-def format_page_text(pagebody):
-    lines = []
-    for tag in pagebody.find_all(["p", "li"]):
-        text = tag.get_text(" ", strip=True)
-        if text and len(text) > 2:
-            lines.append(text)
-    return "\n\n".join(lines)
+class HTTP:
+    def __init__(self):
+        self.session = None
 
-async def parse_page(url):
-    html = await fetch_html(url)
-    soup = BeautifulSoup(html, "html.parser")
-    pagebody = soup.find("div", class_="pagebody")
-    if not pagebody:
-        return [], []
+    async def init(self):
+        self.session = aiohttp.ClientSession()
 
-    folders, files = [], []
-
-    for li in pagebody.find_all("li"):
-        a = li.find("a", href=True)
-        if not a:
-            continue
-
-        title = ""
-        for elem in a.contents:
-            if getattr(elem, "name", None) == "span" and "secdir-small" in elem.get("class", []):
-                continue
-            elif getattr(elem, "name", None) == "br":
-                continue
-            else:
-                text = elem.strip() if isinstance(elem, str) else elem.get_text(strip=True)
-                title += text
-
-        href = a["href"]
-        if href.startswith("/"):
-            href = BASE_URL + href.lstrip("/")
-        elif href.startswith("?"):
-            href = BASE_URL + href
-        if " " in href:
-            href = href.replace(" ", "%20")
-
-        li_classes = li.get("class", [])
-
-        if "secdir-li1" in li_classes:
-            folders.append({"title": title, "url": href, "type": "folder"})
-        elif "secdir-li2" in li_classes:
-            files.append({"title": title, "url": href, "type": "file"})
-
-    for p in pagebody.find_all("p"):
-        a = p.find("a", href=True)
-        if not a:
-            continue
-        title = a.get_text(strip=True)
-        href = a["href"]
-        if href.startswith("/"):
-            href = BASE_URL + href.lstrip("/")
-        elif href.startswith("?"):
-            href = BASE_URL + href
-        if " " in href:
-            href = href.replace(" ", "%20")
-        files.append({"title": title, "url": href, "type": "file"})
-
-    return folders, files
-
-async def show_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, folders, files, path_title):
-    keyboard = []
-    for i, f in enumerate(folders):
-        key = f"folder_{i}"
-        context.user_data[key] = f
-        keyboard.append([InlineKeyboardButton(f"📁 {f['title']}", callback_data=key)])
-    for i, f in enumerate(files):
-        key = f"file_{i}"
-        context.user_data[key] = f
-        keyboard.append([InlineKeyboardButton(f"📎 {f['title']}", callback_data=key)])
-    if context.user_data.get("history"):
-        keyboard.append([InlineKeyboardButton("⬅️ Назад", callback_data="back")])
-    if path_title not in ("Инвестиционная деятельность", "Торги"):
-        keyboard.append([InlineKeyboardButton("🏠 Главное меню", callback_data="main")])
-    markup = InlineKeyboardMarkup(keyboard)
-    if update.callback_query:
-        await update.callback_query.message.edit_text(path_title, reply_markup=markup)
-    else:
-        await update.message.reply_text(path_title, reply_markup=markup)
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data.clear()
-    context.user_data["history"] = []
-
-    keyboard = []
-    for i, page in enumerate(START_PAGES):
-        key = f"root_{i}"
-        context.user_data[key] = {"title": page["title"], "url": page["url"], "type": "folder"}
-        keyboard.append([InlineKeyboardButton(page["title"], callback_data=key)])
-
-    markup = InlineKeyboardMarkup(keyboard)
-    if update.callback_query:
-        await update.callback_query.message.edit_text("Главное меню", reply_markup=markup)
-    else:
-        await update.message.reply_text("Главное меню", reply_markup=markup)
-
-async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    data = query.data
-
-    if data.startswith("root_"):
-        item = context.user_data.get(data)
-        if not item:
-            return
-        context.user_data["history"] = [{"title": item["title"], "url": item["url"]}]
-        folders, files = await parse_page(item["url"])
-        await show_menu(update, context, folders, files, item["title"])
-        return
-
-    if data == "main":
-        await start(update, context)
-        return
-
-    if data == "back":
-        history = context.user_data.get("history", [])
-        if len(history) < 2:
-            await start(update, context)
-            return
-        history.pop()
-        last = history[-1]
-        folders, files = await parse_page(last["url"])
-        await show_menu(update, context, folders, files, last["title"])
-        return
-
-    item = context.user_data.get(data)
-    if not item:
-        await query.edit_message_text("Ошибка выбора")
-        return
-
-    if item["type"] == "file":
-        url = item["url"]
-        description = ""
-        if url.startswith(BASE_URL + "?page="):
-            try:
-                page_html = await fetch_html(url)
-                page_soup = BeautifulSoup(page_html, "html.parser")
-                page_content = page_soup.find("div", class_="pagebody")
-                if page_content:
-                    description = format_page_text(page_content)
-            except Exception as e:
-                description = ""
-                print(f"Ошибка при загрузке страницы: {e}")
-
+    async def get(self, url):
         try:
-            text = f"📎 <b>{item['title']}</b>\n{url}"
-            if description:
-                text += f"\n\n{description}"
+            async with self.session.get(url) as r:
+                return await r.text()
+        except:
+            return ""
 
-            markup = InlineKeyboardMarkup([
-                [InlineKeyboardButton("⬅️ Назад", callback_data="back")],
-                [InlineKeyboardButton("🏠 Главное меню", callback_data="main")]
-            ])
+http = HTTP()
 
-            await query.edit_message_text(text, parse_mode="HTML", reply_markup=markup)
-        except Exception as e:
-            await query.edit_message_text(
-                "Произошла ошибка при отображении документа.\nПопробуйте позже."
-            )
-            print(f"Ошибка отправки сообщения: {e}")
+def fix_url(href):
+    if not href:
+        return ""
+    if href.startswith("/"):
+        return BASE_URL + href.lstrip("/")
+    if href.startswith("?"):
+        return BASE_URL + href
+    return href.replace(" ", "%20")
+
+def parse_page(html):
+    tree = HTMLParser(html)
+    body = tree.css_first("div.pagebody")
+    if not body:
+        return []
+
+    items = []
+
+    for li in body.css("li"):
+        a = li.css_first("a")
+        if not a:
+            continue
+
+        items.append({
+            "title": "".join(a.text().split()),
+            "url": fix_url(a.attributes.get("href", "")),
+            "type": "folder" if "secdir-li1" in li.attributes.get("class", []) else "file"
+        })
+
+    return items
+
+def format_text(html):
+    tree = HTMLParser(html)
+    body = tree.css_first("div.pagebody")
+    if not body:
+        return ""
+
+    return "\n\n".join(
+        el.text().strip()
+        for el in body.css("p,li")
+        if len(el.text().strip()) > 2
+    )
+
+def main_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=t, callback_data=u)]
+        for t, u in START_PAGES
+    ])
+
+def page_kb(items, parent_url):
+    buttons = []
+
+    for i in items:
+        buttons.append([
+            InlineKeyboardButton(text=i["title"], callback_data=i["url"])
+        ])
+
+    buttons.append([
+        InlineKeyboardButton(text="⬅️ Назад", callback_data="home"),
+        InlineKeyboardButton(text="🏠 Главное меню", callback_data="home")
+    ])
+
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+router = Router()
+
+@router.message(Command("start"))
+async def start(m: Message):
+    await m.answer("Главное меню", reply_markup=main_kb())
+
+@router.callback_query(F.data == "home")
+async def home(c: CallbackQuery):
+    await c.message.edit_text("Главное меню", reply_markup=main_kb())
+    await c.answer()
+
+@router.callback_query(F.data.startswith("back|"))
+async def back(c: CallbackQuery):
+    url = c.data.split("|", 1)[1]
+    html = await http.get(url)
+    items = parse_page(html)
+
+    await c.message.edit_text(
+        "Раздел",
+        reply_markup=page_kb(items, BASE_URL)
+    )
+    await c.answer()
+
+@router.callback_query()
+async def open_page(c: CallbackQuery):
+    url = c.data
+    html = await http.get(url)
+
+    items = parse_page(html)
+
+    if items:
+        await c.message.edit_text(
+            "Раздел",
+            reply_markup=page_kb(items, url)
+        )
+        await c.answer()
         return
 
-    if item["type"] == "folder":
-        history = context.user_data.setdefault("history", [])
-        history.append({"title": item["title"], "url": item["url"]})
-        folders, files = await parse_page(item["url"])
-        await show_menu(update, context, folders, files, item["title"])return
+    desc = format_text(html)
 
-    if item["type"] == "folder":
-        history = context.user_data.setdefault("history", [])
-        history.append({"title": item["title"], "url": item["url"]})
-        folders, files = await parse_page(item["url"])
-        await show_menu(update, context, folders, files, item["title"])        
+    text = f"📎 <b>Документ</b>\n{url}\n\n{desc}"
+
+    await c.message.edit_text(
+        text,
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="home")]
+        ])
+    )
+
+async def on_startup(bot: Bot):
+    await http.init()
+    await bot.set_webhook(WEBHOOK_URL)
+
+async def on_shutdown(bot: Bot):
+    await bot.delete_webhook()
+    await http.session.close()
+
+async def main():
+    bot = Bot("TOKEN")
+    dp = Dispatcher()
+    dp.include_router(router)
+
+    dp.startup.register(on_startup)
+    dp.shutdown.register(on_shutdown)
+
+    app = web.Application()
+
+    SimpleRequestHandler(
+        dispatcher=dp,
+        bot=bot
+    ).register(app, path=WEBHOOK_PATH)
+
+    setup_application(app, dp, bot=bot)
+
+    web.run_app(app, host="0.0.0.0", port=3000)
 
 if __name__ == "__main__":
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(button))
-    print("Бот запущен...")
-    app.run_polling()
+    import asyncio
+    asyncio.run(main())
