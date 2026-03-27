@@ -1,9 +1,9 @@
+import os
 import aiohttp
 from selectolax.parser import HTMLParser
 from aiogram import Bot, Dispatcher, Router, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.filters import Command
-from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 from aiohttp import web
 
 BASE_URL = "https://m.arhcity.ru/"
@@ -50,16 +50,20 @@ def parse_page(html: str):
     body = tree.css_first("div.pagebody")
     if not body:
         return []
+
     items = []
+
     for li in body.css("li"):
         a = li.css_first("a")
         if not a:
             continue
+
         items.append({
             "title": " ".join(a.text().split()),
             "url": fix_url(a.attributes.get("href", "")),
             "type": "folder" if "secdir-li1" in (li.attributes.get("class") or []) else "file"
         })
+
     return items
 
 def format_text(html: str):
@@ -67,6 +71,7 @@ def format_text(html: str):
     body = tree.css_first("div.pagebody")
     if not body:
         return ""
+
     return "\n\n".join(
         el.text().strip()
         for el in body.css("p,li")
@@ -84,9 +89,11 @@ def page_kb(items):
         [InlineKeyboardButton(text=i["title"], callback_data=i["url"])]
         for i in items
     ]
+
     buttons.append([
         InlineKeyboardButton(text="🏠 Главное меню", callback_data="home")
     ])
+
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 router = Router()
@@ -104,7 +111,9 @@ async def home(c: CallbackQuery):
 async def open_page(c: CallbackQuery):
     url = c.data
     html = await http.get(url)
+
     items = parse_page(html)
+
     if items:
         await c.message.edit_text(
             "Раздел",
@@ -112,8 +121,11 @@ async def open_page(c: CallbackQuery):
         )
         await c.answer()
         return
+
     desc = format_text(html)
+
     text = f"📎 <b>Документ</b>\n{url}\n\n{desc}"
+
     await c.message.edit_text(
         text,
         parse_mode="HTML",
@@ -130,21 +142,31 @@ async def on_shutdown(bot: Bot):
     await bot.delete_webhook()
     await http.close()
 
-def create_app(bot: Bot, dp: Dispatcher):
-    app = web.Application()
+async def main():
+    bot = Bot(token=os.getenv("BOT_TOKEN"))
+    dp = Dispatcher()
     dp.include_router(router)
+
     dp.startup.register(on_startup)
     dp.shutdown.register(on_shutdown)
-    SimpleRequestHandler(dispatcher=dp, bot=bot).register(app, path=WEBHOOK_PATH)
-    setup_application(app, dp, bot=bot)
+
+    app = web.Application()
+
+    dp["bot"] = bot
+
+    webhook_requests_handler = Dispatcher._webhook_request_handler_factory(
+        dispatcher=dp,
+        bot=bot,
+    )
+
+    app.router.add_post(WEBHOOK_PATH, webhook_requests_handler)
+
+    await bot.delete_webhook()
+    await bot.set_webhook(WEBHOOK_URL)
+
+    print("Бот запущен")
+
     return app
 
-def main():
-    bot = Bot("8500696080:AAGjjcMHCdgjBxAgA40qI3CziyQHaHwXvSs")
-    dp = Dispatcher()
-    app = create_app(bot, dp)
-    print("Бот запущен")
-    web.run_app(app, host="0.0.0.0", port=3000)
-
 if __name__ == "__main__":
-    main()
+    web.run_app(main(), host="0.0.0.0", port=3000)
