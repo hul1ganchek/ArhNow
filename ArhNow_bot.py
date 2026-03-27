@@ -14,7 +14,7 @@ START_PAGES = [
 ]
 
 WEBHOOK_PATH = "/webhook"
-WEBHOOK_URL = "https://arhnow.bothost/webhook"
+WEBHOOK_URL = "https://arhnow/webhook"
 
 class HTTP:
     def __init__(self):
@@ -154,7 +154,7 @@ async def on_shutdown(bot: Bot):
     await http.session.close()
 
 async def main():
-    bot = Bot("TOKEN")
+    bot = Bot("8500696080:AAGjjcMHCdgjBxAgA40qI3CziyQHaHwXvSs")
     dp = Dispatcher()
     dp.include_router(router)
 
