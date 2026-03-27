@@ -30,9 +30,13 @@ class HTTP:
         except:
             return ""
 
+    async def close(self):
+        if self.session:
+            await self.session.close()
+
 http = HTTP()
 
-def fix_url(href):
+def fix_url(href: str) -> str:
     if not href:
         return ""
     if href.startswith("/"):
@@ -41,33 +45,28 @@ def fix_url(href):
         return BASE_URL + href
     return href.replace(" ", "%20")
 
-def parse_page(html):
+def parse_page(html: str):
     tree = HTMLParser(html)
     body = tree.css_first("div.pagebody")
     if not body:
         return []
-
     items = []
-
     for li in body.css("li"):
         a = li.css_first("a")
         if not a:
             continue
-
         items.append({
-            "title": "".join(a.text().split()),
+            "title": " ".join(a.text().split()),
             "url": fix_url(a.attributes.get("href", "")),
-            "type": "folder" if "secdir-li1" in li.attributes.get("class", []) else "file"
+            "type": "folder" if "secdir-li1" in (li.attributes.get("class") or []) else "file"
         })
-
     return items
 
-def format_text(html):
+def format_text(html: str):
     tree = HTMLParser(html)
     body = tree.css_first("div.pagebody")
     if not body:
         return ""
-
     return "\n\n".join(
         el.text().strip()
         for el in body.css("p,li")
@@ -80,19 +79,14 @@ def main_kb():
         for t, u in START_PAGES
     ])
 
-def page_kb(items, parent_url):
-    buttons = []
-
-    for i in items:
-        buttons.append([
-            InlineKeyboardButton(text=i["title"], callback_data=i["url"])
-        ])
-
+def page_kb(items):
+    buttons = [
+        [InlineKeyboardButton(text=i["title"], callback_data=i["url"])]
+        for i in items
+    ]
     buttons.append([
-        InlineKeyboardButton(text="⬅️ Назад", callback_data="home"),
         InlineKeyboardButton(text="🏠 Главное меню", callback_data="home")
     ])
-
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 router = Router()
@@ -106,42 +100,25 @@ async def home(c: CallbackQuery):
     await c.message.edit_text("Главное меню", reply_markup=main_kb())
     await c.answer()
 
-@router.callback_query(F.data.startswith("back|"))
-async def back(c: CallbackQuery):
-    url = c.data.split("|", 1)[1]
-    html = await http.get(url)
-    items = parse_page(html)
-
-    await c.message.edit_text(
-        "Раздел",
-        reply_markup=page_kb(items, BASE_URL)
-    )
-    await c.answer()
-
 @router.callback_query()
 async def open_page(c: CallbackQuery):
     url = c.data
     html = await http.get(url)
-
     items = parse_page(html)
-
     if items:
         await c.message.edit_text(
             "Раздел",
-            reply_markup=page_kb(items, url)
+            reply_markup=page_kb(items)
         )
         await c.answer()
         return
-
     desc = format_text(html)
-
     text = f"📎 <b>Документ</b>\n{url}\n\n{desc}"
-
     await c.message.edit_text(
         text,
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data="home")]
+            [InlineKeyboardButton(text="🏠 Главное меню", callback_data="home")]
         ])
     )
 
@@ -151,27 +128,23 @@ async def on_startup(bot: Bot):
 
 async def on_shutdown(bot: Bot):
     await bot.delete_webhook()
-    await http.session.close()
+    await http.close()
 
-async def main():
-    bot = Bot("8500696080:AAGjjcMHCdgjBxAgA40qI3CziyQHaHwXvSs")
-    dp = Dispatcher()
+def create_app(bot: Bot, dp: Dispatcher):
+    app = web.Application()
     dp.include_router(router)
-
     dp.startup.register(on_startup)
     dp.shutdown.register(on_shutdown)
-
-    app = web.Application()
-
-    SimpleRequestHandler(
-        dispatcher=dp,
-        bot=bot
-    ).register(app, path=WEBHOOK_PATH)
-
+    SimpleRequestHandler(dispatcher=dp, bot=bot).register(app, path=WEBHOOK_PATH)
     setup_application(app, dp, bot=bot)
+    return app
 
+def main():
+    bot = Bot("8500696080:AAGjjcMHCdgjBxAgA40qI3CziyQHaHwXvSs")
+    dp = Dispatcher()
+    app = create_app(bot, dp)
+    print("Бот запущен")
     web.run_app(app, host="0.0.0.0", port=3000)
 
 if __name__ == "__main__":
-    import asyncio
-    asyncio.run(main())
+    main()
