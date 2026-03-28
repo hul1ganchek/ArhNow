@@ -3,7 +3,6 @@ from bs4 import BeautifulSoup
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
 
-BOT_TOKEN = "8500696080:AAGjjcMHCdgjBxAgA40qI3CziyQHaHwXvSs"
 BASE_URL = "https://m.arhcity.ru/"
 START_PAGES = [
     {"title": "Инвестиционная деятельность", "url": BASE_URL + "?page=1472/0"},
@@ -201,7 +200,8 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_menu(update, context, folders, files, item["title"])        
 
 if __name__ == "__main__":
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    load_dotenv()
+    app = ApplicationBuilder().token(os.getenv("8500696080:AAGjjcMHCdgjBxAgA40qI3CziyQHaHwXvSs")).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(button))
     print("Бот запущен...")
