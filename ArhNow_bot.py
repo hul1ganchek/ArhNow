@@ -200,8 +200,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_menu(update, context, folders, files, item["title"])        
 
 if __name__ == "__main__":
-    load_dotenv()
-    app = ApplicationBuilder().token(os.getenv("8500696080:AAGjjcMHCdgjBxAgA40qI3CziyQHaHwXvSs")).build()
+    app = ApplicationBuilder().token("8500696080:AAGjjcMHCdgjBxAgA40qI3CziyQHaHwXvSs").build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(button))
     print("Бот запущен...")
