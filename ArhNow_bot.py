@@ -205,4 +205,4 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(button))
     print("Бот запущен...")
-    app.run_polling() перепиши сразу это под мои библиотеки новые
+    app.run_polling()
