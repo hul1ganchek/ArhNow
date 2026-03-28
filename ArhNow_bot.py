@@ -1,10 +1,9 @@
-import os
-import aiohttp
-from selectolax.parser import HTMLParser
 from aiogram import Bot, Dispatcher, Router, F
-from aiogram.types import Message, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import Message, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from aiogram.filters import Command
 from aiohttp import web
+import aiohttp
+from selectolax.parser import HTMLParser
 
 BASE_URL = "https://m.arhcity.ru/"
 
@@ -14,7 +13,7 @@ START_PAGES = [
 ]
 
 WEBHOOK_PATH = "/webhook"
-WEBHOOK_URL = "https://arhnow/webhook"
+WEBHOOK_URL = "https://arhnow.bothost.ru/webhook"
 
 class HTTP:
     def __init__(self):
@@ -36,6 +35,7 @@ class HTTP:
 
 http = HTTP()
 
+# ---------- PARSE ----------
 def fix_url(href: str) -> str:
     if not href:
         return ""
@@ -52,7 +52,6 @@ def parse_page(html: str):
         return []
 
     items = []
-
     for li in body.css("li"):
         a = li.css_first("a")
         if not a:
@@ -61,7 +60,6 @@ def parse_page(html: str):
         items.append({
             "title": " ".join(a.text().split()),
             "url": fix_url(a.attributes.get("href", "")),
-            "type": "folder" if "secdir-li1" in (li.attributes.get("class") or []) else "file"
         })
 
     return items
@@ -85,15 +83,8 @@ def main_kb():
     ])
 
 def page_kb(items):
-    buttons = [
-        [InlineKeyboardButton(text=i["title"], callback_data=i["url"])]
-        for i in items
-    ]
-
-    buttons.append([
-        InlineKeyboardButton(text="🏠 Главное меню", callback_data="home")
-    ])
-
+    buttons = [[InlineKeyboardButton(text=i["title"], callback_data=i["url"])] for i in items]
+    buttons.append([InlineKeyboardButton(text="🏠 Главное меню", callback_data="home")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 router = Router()
@@ -109,64 +100,44 @@ async def home(c: CallbackQuery):
 
 @router.callback_query()
 async def open_page(c: CallbackQuery):
-    url = c.data
-    html = await http.get(url)
-
+    html = await http.get(c.data)
     items = parse_page(html)
 
     if items:
-        await c.message.edit_text(
-            "Раздел",
-            reply_markup=page_kb(items)
-        )
-        await c.answer()
+        await c.message.edit_text("Раздел", reply_markup=page_kb(items))
         return
 
     desc = format_text(html)
+    await c.message.edit_text(f"{desc[:4000]}")
 
-    text = f"📎 <b>Документ</b>\n{url}\n\n{desc}"
+dp = Dispatcher()
+dp.include_router(router)
 
-    await c.message.edit_text(
-        text,
-        parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🏠 Главное меню", callback_data="home")]
-        ])
-    )
+async def handle(request):
+    bot = request.app["bot"]
+    data = await request.json()
+    update = Update.model_validate(data)
+    await dp.feed_update(bot, update)
+    return web.Response()
 
-async def on_startup(bot: Bot):
+async def on_startup(app):
+    bot = app["bot"]
     await http.init()
     await bot.set_webhook(WEBHOOK_URL)
+    print("Webhook установлен")
 
-async def on_shutdown(bot: Bot):
+async def on_shutdown(app):
+    bot = app["bot"]
     await bot.delete_webhook()
     await http.close()
 
-async def main():
-    bot = Bot(token=os.getenv("BOT_TOKEN"))
-    dp = Dispatcher()
-    dp.include_router(router)
+bot = Bot("8500696080:AAGjjcMHCdgjBxAgA40qI3CziyQHaHwXvSs")
+app = web.Application()
+app["bot"] = bot
 
-    dp.startup.register(on_startup)
-    dp.shutdown.register(on_shutdown)
+app.router.add_post(WEBHOOK_PATH, handle)
+app.on_startup.append(on_startup)
+app.on_shutdown.append(on_shutdown)
 
-    app = web.Application()
-
-    dp["bot"] = bot
-
-    webhook_requests_handler = Dispatcher._webhook_request_handler_factory(
-        dispatcher=dp,
-        bot=bot,
-    )
-
-    app.router.add_post(WEBHOOK_PATH, webhook_requests_handler)
-
-    await bot.delete_webhook()
-    await bot.set_webhook(WEBHOOK_URL)
-
-    print("Бот запущен")
-
-    return app
-
-if __name__ == "__main__":
-    web.run_app(main(), host="0.0.0.0", port=3000)
+print("Сервер стартует...")
+web.run_app(app, host="0.0.0.0", port=3000)
