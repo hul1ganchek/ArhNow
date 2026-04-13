@@ -222,8 +222,6 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 if __name__ == "__main__":
     app = ApplicationBuilder().token(os.getenv("BOT_TOKEN")).build()
-    if not TOKEN:
-        raise ValueError("BOT_TOKEN не найден в переменных окружения")
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(button))
     print("Бот запущен...")
