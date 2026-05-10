@@ -1,10 +1,17 @@
-import os, aiohttp
-from io import BytesIO
+import os, vk_api
+import urllib3
+from urllib.parse import urljoin
+import requests
 from bs4 import BeautifulSoup
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
+from vk_api.longpoll import VkLongPoll, VkEventType
+from vk_api.keyboard import VkKeyboard, VkKeyboardColor
 
-pages = [
+vk_session = vk_api.VkApi(token=os.getenv("vk_token"))
+vk = vk_session.get_api()
+longpoll = VkLongPoll(vk_session)
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+sources = [
     {"title": "Инвестиционная деятельность", "source": [
         {"title": "Старый источник", "url": "https://m.arhcity.ru/?page=1472/0"},
         {"title": "Новый источник", "url": "https://arhcity.gosuslugi.ru/deyatelnost/napravleniya-deyatelnosti/investitsionnaya-deyatelnost/"}
@@ -14,215 +21,197 @@ pages = [
         {"title": "Новый источник", "url": "https://arhcity.gosuslugi.ru/deyatelnost/napravleniya-deyatelnosti/torgi/"}
     ]}
 ]
+user_state = {}
+page_size = 5
 
-image_path = os.path.join(os.path.dirname(__file__), "portal.jpeg")
-with open(image_path, "rb") as f:
-    image_bytes = f.read()
-
-async def fetch_html(url):
+def fetch(url):
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url) as resp:
-                resp.raise_for_status()
-                return await resp.text()
+        r = requests.get(url, timeout=10, verify=False)
+        return r.text
     except Exception as e:
         print(f"Ошибка при получении HTML {url}: {e}")
         return ""
 
-def format_page_text(pagebody):
-    lines = []
-    for tag in pagebody.find_all(["p", "li"]):
-        text = tag.get_text(" ", strip=True)
-        if not text or len(text) < 3:
-            continue
-        lines.append(text)
-    return "\n\n".join(lines)
-
-async def parse(urls):
-    all_folders, all_files = [], []
+def parse(urls):
+    folders, files = [], []
+    seen = set()
     for src in urls:
         url = src["url"]
-        is_new = "gosuslugi" in url
-        html = await fetch_html(url)
+        html = fetch(url)
         soup = BeautifulSoup(html, "html.parser")
-        folders, files = [], []
-        def normalize(href, base):
+        
+        def normalize(base, href):           
             if not href:
                 return None
-            if href.startswith("/"):
-                href = base + href.lstrip("/")
-            elif href.startswith("?"):
-                href = base + href
-            return href.replace(" ", "%20")
-        if is_new:
-            for a in soup.select("li.menu-item a.menu-item-link"):
-                title = "🆕 " + a.get_text(strip=True)
-                href = normalize(a.get("href"), "https://arhcity.gosuslugi.ru/")
-                if title and href:
-                    folders.append({"title": title, "url": href, "type": "folder"})
-            for file_block in soup.select(".tpl-component-gw-file .tpl-block-list-objects .object-item"):
-                a = file_block.find("a", class_="item-name", href=True)
-                if not a:
-                    continue       
-                href = normalize(a["href"], "https://arhcity.gosuslugi.ru/")
-                if not href or "arhcity.ru/?page=" in href:
-                    continue
-                title = "🆕 " + a.get_text(strip=True)
-                files.append({"title": title, "url": href, "type": "file"})
-            for article in soup.select(".tpl-component-gw-base-text article"):
-                for p in article.find_all("p"):
-                    a = p.find("a", href=True)
-                    if not a:
-                        continue        
-                    href = normalize(a["href"], "https://arhcity.gosuslugi.ru/")
-                    if not href or "arhcity.ru/?page=" in href:
-                        continue
-                    title = "🆕 " + a.get_text(strip=True)
-                    files.append({"title": title, "url": href, "type": "file"})
-        else:
-            pagebody = soup.find("div", class_="pagebody")   
-            if pagebody:
-                for li in pagebody.find_all("li"):
-                    a = li.find("a", href=True)
-                    if not a:
-                        continue
-                    title = ""
-                    for elem in a.contents:
-                        if getattr(elem, "name", None) == "span" and "secdir-small" in elem.get("class", []):
-                            continue
-                        elif getattr(elem, "name", None) == "br":
-                            continue
-                        else:
-                            text = elem.strip() if isinstance(elem, str) else elem.get_text(strip=True)
-                            title += text
-                    href = normalize(a["href"], "https://m.arhcity.ru/")
-                    li_classes = li.get("class", [])
-                    if "secdir-li1" in li_classes:
-                        folders.append({"title": title, "url": href, "type": "folder"})
-                    elif "secdir-li2" in li_classes:
-                        files.append({"title": title, "url": href, "type": "file"})
-                for p in pagebody.find_all("p"):
-                    a = p.find("a", href=True)
-                    if not a:
-                        continue
-                    title = a.get_text(strip=True)
-                    href = normalize(a["href"], "https://m.arhcity.ru/")
-                    files.append({"title": title, "url": href, "type": "file"})
-        all_folders.extend(folders)
-        all_files.extend(files)
-    return all_folders, all_files
+            return urljoin(base, href)
     
-async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE, folders, files, path_title):
-    keyboard = []
-    for i, f in enumerate(folders):
-        key = f"folder_{i}"
-        context.user_data[key] = f
-        keyboard.append([InlineKeyboardButton(f"📁 {f['title']}", callback_data=key)])
-    for i, f in enumerate(files):
-        key = f"file_{i}"
-        context.user_data[key] = f
-        keyboard.append([InlineKeyboardButton(f"📎 {f['title']}", callback_data=key)])
-    if context.user_data.get("history"):
-        keyboard.append([InlineKeyboardButton("⬅️ Назад", callback_data="back")])
-    if path_title not in ("Инвестиционная деятельность", "Торги"):
-        keyboard.append([InlineKeyboardButton("🏠 Главное меню", callback_data="main")])
-    markup = InlineKeyboardMarkup(keyboard)
-    if update.callback_query:
-        msg = update.callback_query.message
-        if msg.photo:
-            await msg.edit_caption(caption=path_title, reply_markup=markup)
+        if "gosuslugi" in url:
+            for a in soup.select("li.menu-item a.menu-item-link"):
+                href = normalize("https://arhcity.gosuslugi.ru/", a.get("href"))
+                title = "🆕 " + a.get_text(strip=True)
+                if href and href not in seen and title:
+                    seen.add(href)
+                    folders.append({"title": title, "url": href, "type": "folder"})
+            for a in soup.select(".tpl-component-gw-file a.item-name[href], .tpl-component-gw-base-text a[href]"):
+                href = normalize("https://arhcity.gosuslugi.ru/", a.get("href"))
+                title = "🆕 " + a.get_text(strip=True)
+                if href and href not in seen and title:
+                    seen.add(href)
+                    files.append({"title": title, "url": href, "type": "file"})
         else:
-            await msg.edit_text(path_title, reply_markup=markup)
-    elif update.message:
-        await update.message.reply_text(path_title, reply_markup=markup)
+            pagebody = soup.find("div", class_="pagebody")
+            if not pagebody:
+                continue
+            for li in pagebody.find_all("li"):
+                a = li.find("a", href=True)
+                if not a:
+                    continue
+                href = normalize("https://m.arhcity.ru/", a.get("href"))
+                if not href or href in seen:
+                    continue
+                title = ""
+                for e in a.contents:
+                    if getattr(e, "name", None) == "span" and "secdir-small" in e.get("class", []):
+                        continue
+                    if getattr(e, "name", None) == "br":
+                        continue
+                    title += e.strip() if isinstance(e, str) else e.get_text(strip=True)
+                title = " ".join(title.split())
+                seen.add(href)
+                if "secdir-li1" in li.get("class", []):
+                    folders.append({"title": title, "url": href, "type": "folder"})
+                elif "secdir-li2" in li.get("class", []):
+                    files.append({"title": title, "url": href, "type": "file"})
+            for a in pagebody.select("p > a[href]"):
+                href = normalize("https://m.arhcity.ru/", a.get("href"))
+                title = " ".join(a.get_text(" ", strip=True).split())
+                if href and href not in seen and title and href != url:
+                    seen.add(href)
+                    files.append({"title": title, "url": href, "type": "file"})
+    return folders, files
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data.clear()
-    context.user_data["history"] = []
-    keyboard = []
-    for i, page in enumerate(pages):
-        key = f"root_{i}"
-        context.user_data[key] = {"title": page["title"], "source": page["source"], "type": "folder"}
-        keyboard.append([InlineKeyboardButton(page["title"], callback_data=key)])
-    markup = InlineKeyboardMarkup(keyboard)
-    photo = BytesIO(image_bytes)
-    photo.name = "portal.jpeg"
-    if update.callback_query:
-        msg = update.callback_query.message
-        if msg.photo:
-            await msg.edit_caption(caption="🏠 Главное меню", reply_markup=markup)
-        else:
-            await msg.reply_photo(photo=photo, caption="🏠 Главное меню", reply_markup=markup)
-    elif update.message:
-        await update.message.reply_photo(photo=photo, caption="🏠 Главное меню", reply_markup=markup)
+def send(uid, text, kb=None):
+    vk.messages.send(user_id=uid, message=text[:4000], random_id=0, keyboard=kb.get_keyboard() if kb else None)
 
-async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    data = query.data
-    if data.startswith("root_"):
-        item = context.user_data.get(data)
-        if not item:
-            return
-        context.user_data["history"] = [{"title": item["title"], "source": item["source"]}]
-        folders, files = await parse(item["source"])
-        await menu(update, context, folders, files, item["title"])
-        context.user_data["current_items"] = folders + files
+def section_menu():
+    kb = VkKeyboard(one_time=False)
+    kb.add_button("Инвестиционная деятельность", VkKeyboardColor.SECONDARY)
+    kb.add_line()
+    kb.add_button("Торги", VkKeyboardColor.SECONDARY)
+    return kb
+
+def subsection_menu(items, page=0):
+    kb = VkKeyboard(one_time=False)
+    start = page * page_size
+    chunk = items[start:start + page_size]
+    label_map = {}
+    for i, item in enumerate(chunk, start=1):
+        title = " ".join(item["title"].split())
+        if len(title) > 22:
+            title = title[:21] + "…"
+        prefix = "📁" if item["type"] == "folder" else "📎"
+        label = f"{prefix} {title}"
+        if len(label) > 40:
+            label = label[:40]
+        kb.add_button(label, VkKeyboardColor.SECONDARY if item["type"] == "folder" else VkKeyboardColor.SECONDARY)
+        label_map[label] = item
+        kb.add_line()
+    if page > 0:
+        kb.add_button("◀️", VkKeyboardColor.SECONDARY)
+        kb.add_line()
+    if start + page_size < len(items):
+        kb.add_button("▶️", VkKeyboardColor.SECONDARY)
+        kb.add_line()
+    kb.add_button("⬅️ Назад", VkKeyboardColor.POSITIVE)
+    kb.add_line()
+    kb.add_button("🏠 Главное Меню", VkKeyboardColor.NEGATIVE)
+    return kb, label_map
+
+def show_menu(uid, title, items, page=0):
+    state = user_state.setdefault(uid, {"items": [], "history": [], "page": 0, "map": {}, "title": ""})
+    kb, label_map = subsection_menu(items, page)
+    state["items"] = items
+    state["page"] = page
+    state["map"] = label_map
+    state["title"] = title
+    send(uid, title, kb)
+
+def handle(uid, text):
+    state = user_state.setdefault(uid, {"items": [], "history": [], "page": 0, "map": {}, "title": ""})
+
+    if text in ("Начать", "🏠 Главное Меню"):
+        user_state[uid] = {"items": [], "history": [], "page": 0, "map": {}, "title": ""}
+        send(uid, "🏠 Главное Меню", section_menu())
         return
-    if data == "main":
-        await start(update, context)
+
+    if text == "Инвестиционная деятельность":
+        page = sources[0]
+        folders, files = parse(page["source"])
+        state["history"] = [{"title": page["title"], "source": page["source"]}]
+        show_menu(uid, page["title"], folders + files, 0)
         return
-    if data == "back":
-        history = context.user_data.get("history", [])
-        if len(history) < 2:
-            await start(update, context)
+
+    if text == "Торги":
+        page = sources[1]
+        folders, files = parse(page["source"])
+        state["history"] = [{"title": page["title"], "source": page["source"]}]
+        show_menu(uid, page["title"], folders + files, 0)
+        return
+
+    if text == "⬅️ Назад":
+        history = state.get("history", [])
+        if len(history) <= 1:
+            user_state[uid] = {"items": [], "history": [], "page": 0, "map": {}, "title": ""}
+            send(uid, "🏠 Главное Меню", section_menu())
             return
         history.pop()
         last = history[-1]
-        folders, files = await parse(last["source"])
-        await menu(update, context, folders, files, last["title"])
-        context.user_data["current_items"] = folders + files
+        folders, files = parse(last["source"])
+        show_menu(uid, last["title"], folders + files, 0)
         return
-    item = context.user_data.get(data)
-    if not item:
-        msg = query.message
-        if msg.photo:
-            await msg.edit_caption("Ошибка выбора")
-        else:
-            await msg.edit_text("Ошибка выбора")
-        return  
-    if item["type"] == "file":
-        url = item["url"]
-        description = ""
-        if url.startswith("https://m.arhcity.ru/?page="):
-            try:
-                page_html = await fetch_html(url)
-                page_soup = BeautifulSoup(page_html, "html.parser")
-                page_content = page_soup.find("div", class_="pagebody")
-                if page_content:
-                    description = format_page_text(page_content)  
-            except Exception:
-                description = ""
-        text = f"📎 <b>{item['title']}</b>\n{url}"
-        if description:
-            text += f"\n\n{description}"
-        text = text[:1024]
-        markup = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="back")],[InlineKeyboardButton("🏠 Главное меню", callback_data="main")]])
-        msg = query.message
-        if msg.photo:
-            await msg.edit_caption(caption=text, reply_markup=markup, parse_mode="HTML")
-        else:
-            await msg.edit_text(text, reply_markup=markup, parse_mode="HTML")
-        return
-    if item["type"] == "folder":
-        history = context.user_data.setdefault("history", [])
-        history.append({"title": item["title"], "source": [{"url": item["url"]}]})
-        folders, files = await parse([{"url": item["url"]}])
-        await menu(update, context, folders, files, item["title"])        
 
-if __name__ == "__main__":
-    app = ApplicationBuilder().token(os.getenv("BOT_TOKEN")).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(button))
-    print("Бот запущен...")
-    app.run_polling()
+    if text == "◀️":
+        page = max(0, state.get("page", 0) - 1)
+        show_menu(uid, state.get("title", ""), state.get("items", []), page)
+        return
+
+    if text == "▶️":
+        items = state.get("items", [])
+        page = state.get("page", 0) + 1
+        if page <= (len(items) - 1) // page_size:
+            show_menu(uid, state.get("title", ""), items, page)
+        return
+
+    item = state.get("map", {}).get(text)
+    if not item:
+        return
+
+    if item["type"] == "folder":
+        folders, files = parse([{"url": item["url"]}])
+        state["history"].append({"title": item["title"], "source": [{"url": item["url"]}]})
+        show_menu(uid, item["title"], folders + files, 0)
+        return
+
+    desc = ""
+    html = fetch(item["url"])
+    if html:
+        soup = BeautifulSoup(html, "html.parser")
+        body = soup.find("div", class_="pagebody")
+        if body:
+            lines = []
+            for tag in body.find_all(["p", "li"]):
+                t = tag.get_text(" ", strip=True)
+                if len(t) >= 3:
+                    lines.append(t)
+            desc = "\n\n".join(lines)
+
+    msg = f"📎 {item['title']}\n\n{item['url']}"
+    if desc:
+        msg += f"\n\n{desc}"
+    send(uid, msg)
+
+print("Процесс запущен...")
+
+for event in longpoll.listen():
+    if event.type == VkEventType.MESSAGE_NEW and event.to_me:
+        handle(event.user_id, event.text.strip())
