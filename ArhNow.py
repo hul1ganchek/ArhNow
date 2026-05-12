@@ -22,7 +22,7 @@ sources = [
     ]}
 ]
 user_state = {}
-page_size = 7
+page_size = 5
 
 def fetch(url):
     try:
