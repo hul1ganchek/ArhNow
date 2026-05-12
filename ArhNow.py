@@ -1,6 +1,6 @@
 import os, vk_api
 import urllib3
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit, urlunsplit, quote
 import requests
 from bs4 import BeautifulSoup
 from vk_api.longpoll import VkLongPoll, VkEventType
@@ -95,9 +95,9 @@ def send(uid, text, kb=None):
 
 def section_menu():
     kb = VkKeyboard(one_time=False)
-    kb.add_button("Инвестиционная деятельность", VkKeyboardColor.SECONDARY)
+    kb.add_button("📁 Инвестиционная деятельность", VkKeyboardColor.SECONDARY)
     kb.add_line()
-    kb.add_button("Торги", VkKeyboardColor.SECONDARY)
+    kb.add_button("📁 Торги", VkKeyboardColor.SECONDARY)
     return kb
 
 def subsection_menu(items, page=0):
@@ -113,7 +113,7 @@ def subsection_menu(items, page=0):
         label = f"{prefix} {title}"
         if len(label) > 40:
             label = label[:40]
-        kb.add_button(label, VkKeyboardColor.SECONDARY if item["type"] == "folder" else VkKeyboardColor.SECONDARY)
+        kb.add_button(label, VkKeyboardColor.SECONDARY)
         label_map[label] = item
         kb.add_line()
     if page > 0:
@@ -138,20 +138,25 @@ def show_menu(uid, title, items, page=0):
 
 def handle(uid, text):
     state = user_state.setdefault(uid, {"items": [], "history": [], "page": 0, "map": {}, "title": ""})
+    
+    def abs_url(u):
+        u = urljoin("https://arhcity.ru", u)
+        p = urlsplit(u)
+        return urlunsplit((p.scheme, p.netloc, quote(p.path), p.query, p.fragment))
 
     if text in ("Начать", "🏠 Главное Меню"):
         user_state[uid] = {"items": [], "history": [], "page": 0, "map": {}, "title": ""}
         send(uid, "🏠 Главное Меню", section_menu())
         return
 
-    if text == "Инвестиционная деятельность":
+    if text == "📁 Инвестиционная деятельность":
         page = sources[0]
         folders, files = parse(page["source"])
         state["history"] = [{"title": page["title"], "source": page["source"]}]
         show_menu(uid, page["title"], folders + files, 0)
         return
 
-    if text == "Торги":
+    if text == "📁 Торги":
         page = sources[1]
         folders, files = parse(page["source"])
         state["history"] = [{"title": page["title"], "source": page["source"]}]
@@ -159,20 +164,19 @@ def handle(uid, text):
         return
 
     if text == "⬅️ Назад":
-        history = state.get("history", [])
-        if len(history) <= 1:
+        h = state.get("history", [])
+        if len(h) <= 1:
             user_state[uid] = {"items": [], "history": [], "page": 0, "map": {}, "title": ""}
             send(uid, "🏠 Главное Меню", section_menu())
             return
-        history.pop()
-        last = history[-1]
+        h.pop()
+        last = h[-1]
         folders, files = parse(last["source"])
         show_menu(uid, last["title"], folders + files, 0)
         return
 
     if text == "◀️":
-        page = max(0, state.get("page", 0) - 1)
-        show_menu(uid, state.get("title", ""), state.get("items", []), page)
+        show_menu(uid, state.get("title", ""), state.get("items", []), max(0, state.get("page", 0) - 1))
         return
 
     if text == "▶️":
@@ -184,34 +188,36 @@ def handle(uid, text):
 
     item = state.get("map", {}).get(text)
     if not item:
-        return
-
+        return  
+    url = abs_url(item["url"])
     if item["type"] == "folder":
-        folders, files = parse([{"url": item["url"]}])
-        state["history"].append({"title": item["title"], "source": [{"url": item["url"]}]})
+        folders, files = parse([{"url": url}])
+        state["history"].append({"title": item["title"], "source": [{"url": url}]})
         show_menu(uid, item["title"], folders + files, 0)
         return
-
-    desc = ""
-    html = fetch(item["url"])
+    html = fetch(url)
+    desc_parts, links = [], []
     if html:
         soup = BeautifulSoup(html, "html.parser")
         body = soup.find("div", class_="pagebody")
         if body:
-            lines = []
             for tag in body.find_all(["p", "li"]):
                 t = tag.get_text(" ", strip=True)
-                if len(t) >= 3:
-                    lines.append(t)
-            desc = "\n\n".join(lines)
-
-    msg = f"📎 {item['title']}\n\n{item['url']}"
-    if desc:
-        msg += f"\n\n{desc}"
+                if len(t) < 3:
+                    continue
+                if t:
+                    desc_parts.append(t)
+                for a in tag.find_all("a", href=True):
+                    u = abs_url(a["href"])
+                    if u not in links:
+                        links.append(u)
+    msg = f"📎 {item['title']}\n\n{url}"
+    if desc_parts:
+        msg += "\n\n📄 Описание страницы:\n" + "\n".join(desc_parts)
+    if links:
+        msg += "\n\n🔗 Ссылки на документы в тексте:\n" + "\n".join(links)
     send(uid, msg)
-
-print("Процесс запущен...")
-
+    
 for event in longpoll.listen():
     if event.type == VkEventType.MESSAGE_NEW and event.to_me:
         handle(event.user_id, event.text.strip())
