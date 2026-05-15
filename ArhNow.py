@@ -61,8 +61,7 @@ def db_save_items(section_id, parent_id, items):
     for item in items:
         db_save_subsection(section_id, parent_id, item["title"], item["url"], item["type"])
 
-vk_session = vk_api.VkApi(token="vk1.a.vToJwMVDOFKdfy4mT1yfviYsLKWKK-2wcIPx2LPKYfQnez4EUXrxFZFfyRBxS1rSiNWJ8j40PtDA-NO1Yoz9KkFdyTHCC2xVC2Vp27jyfJ2NS74yorT6bOKgTTYD_mWY0vIJ_ZslSKeRtGCUytbW20F2Ql8Xxo034xlFwrsPjgEcNDaGleJ1zUs1_qy-hyeGwYTz-42yG93kESZDV6XbtA")
-vk = vk_session.get_api()
+vk_session = vk_api.VkApi(token=os.getenv("vk_token"))vk = vk_session.get_api()
 longpoll = VkLongPoll(vk_session)
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
