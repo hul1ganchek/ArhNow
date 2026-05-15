@@ -62,6 +62,7 @@ def db_save_items(section_id, parent_id, items):
         db_save_subsection(section_id, parent_id, item["title"], item["url"], item["type"])
 
 vk_session = vk_api.VkApi(token=os.getenv("vk_token"))
+vk_session.get_api()
 longpoll = VkLongPoll(vk_session)
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
