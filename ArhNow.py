@@ -1,12 +1,67 @@
 import os, vk_api
+import sqlite3
 import urllib3
 from urllib.parse import urljoin, urlsplit, urlunsplit, quote
+from io import BytesIO
 import requests
 from bs4 import BeautifulSoup
 from vk_api.longpoll import VkLongPoll, VkEventType
 from vk_api.keyboard import VkKeyboard, VkKeyboardColor
 
-vk_session = vk_api.VkApi(token=os.getenv("vk_token"))
+db_name = "Storage.db"
+
+def db_conn():
+    conn = sqlite3.connect(db_name)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON;")
+    return conn
+
+def db_save_section(title):
+    with db_conn() as conn:
+        conn.execute("INSERT OR IGNORE INTO sections(title) VALUES (?)", (title,))
+        row = conn.execute("SELECT id FROM sections WHERE title = ?", (title,)).fetchone()
+        return row["id"] if row else None
+
+def db_save_subsection(section_id, parent_id, title, url, type_):
+    with db_conn() as conn:
+        conn.execute("""
+            INSERT INTO subsections(section_id, parent_id, title, url, type)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(url) DO UPDATE SET
+                section_id = excluded.section_id,
+                parent_id = excluded.parent_id,
+                title = excluded.title,
+                type = excluded.type
+        """, (section_id, parent_id, title, url, type_))
+        row = conn.execute("SELECT id FROM subsections WHERE url = ?", (url,)).fetchone()
+        return row["id"] if row else None
+
+def db_save_document(subsection_id, title, url, description):
+    with db_conn() as conn:
+        conn.execute("""
+            INSERT INTO documents(subsection_id, title, url, description)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(url) DO UPDATE SET
+                subsection_id = excluded.subsection_id,
+                title = excluded.title,
+                description = excluded.description,
+                parsed_at = CURRENT_TIMESTAMP
+        """, (subsection_id, title, url, description))
+        row = conn.execute("SELECT id FROM documents WHERE url = ?", (url,)).fetchone()
+        return row["id"] if row else None
+
+def db_save_history(vk_id, action, subsection_id=None, document_id=None):
+    with db_conn() as conn:
+        conn.execute("""
+            INSERT INTO users_history(vk_id, action, subsection_id, document_id)
+            VALUES (?, ?, ?, ?)
+        """, (vk_id, action, subsection_id, document_id))
+
+def db_save_items(section_id, parent_id, items):
+    for item in items:
+        db_save_subsection(section_id, parent_id, item["title"], item["url"], item["type"])
+
+vk_session = vk_api.VkApi(token="vk1.a.vToJwMVDOFKdfy4mT1yfviYsLKWKK-2wcIPx2LPKYfQnez4EUXrxFZFfyRBxS1rSiNWJ8j40PtDA-NO1Yoz9KkFdyTHCC2xVC2Vp27jyfJ2NS74yorT6bOKgTTYD_mWY0vIJ_ZslSKeRtGCUytbW20F2Ql8Xxo034xlFwrsPjgEcNDaGleJ1zUs1_qy-hyeGwYTz-42yG93kESZDV6XbtA")
 vk = vk_session.get_api()
 longpoll = VkLongPoll(vk_session)
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -21,6 +76,10 @@ sources = [
         {"title": "Новый источник", "url": "https://arhcity.gosuslugi.ru/deyatelnost/napravleniya-deyatelnosti/torgi/"}
     ]}
 ]
+
+for s in sources:
+    db_save_section(s["title"])
+
 user_state = {}
 page_size = 6
 
@@ -39,12 +98,12 @@ def parse(urls):
         url = src["url"]
         html = fetch(url)
         soup = BeautifulSoup(html, "html.parser")
-        
-        def normalize(base, href):           
+
+        def normalize(base, href):
             if not href:
                 return None
             return urljoin(base, href)
-    
+
         if "gosuslugi" in url:
             for a in soup.select("li.menu-item a.menu-item-link"):
                 href = normalize("https://arhcity.gosuslugi.ru/", a.get("href"))
@@ -128,7 +187,7 @@ def subsection_menu(items, page=0):
     return kb, label_map
 
 def show_menu(uid, title, items, page=0):
-    state = user_state.setdefault(uid, {"items": [], "history": [], "page": 0, "map": {}, "title": ""})
+    state = user_state.setdefault(uid, {"items": [], "history": [], "page": 0, "map": {}, "title": "", "section_id": None, "current_subsection_id": None})
     kb, label_map = subsection_menu(items, page)
     state["items"] = items
     state["page"] = page
@@ -137,41 +196,53 @@ def show_menu(uid, title, items, page=0):
     send(uid, title, kb)
 
 def handle(uid, text):
-    state = user_state.setdefault(uid, {"items": [], "history": [], "page": 0, "map": {}, "title": ""})
-    
+    state = user_state.setdefault(uid, {"items": [], "history": [], "page": 0, "map": {}, "title": "", "section_id": None, "current_subsection_id": None})
+
     def abs_url(u):
         u = urljoin("https://arhcity.ru", u)
         p = urlsplit(u)
         return urlunsplit((p.scheme, p.netloc, quote(p.path), p.query, p.fragment))
 
     if text in ("Начать", "🏠 Главное Меню"):
-        user_state[uid] = {"items": [], "history": [], "page": 0, "map": {}, "title": ""}
+        user_state[uid] = {"items": [], "history": [], "page": 0, "map": {}, "title": "", "section_id": None, "current_subsection_id": None}
         send(uid, "🏠 Главное Меню", section_menu())
         return
 
     if text == "📁 Инвестиционная деятельность":
         page = sources[0]
+        section_id = db_save_section(page["title"])
         folders, files = parse(page["source"])
-        state["history"] = [{"title": page["title"], "source": page["source"]}]
+        db_save_items(section_id, None, folders + files)
+        db_save_history(uid, "open_section")
+        state["section_id"] = section_id
+        state["current_subsection_id"] = None
+        state["history"] = [{"title": page["title"], "source": page["source"], "subsection_id": None}]
         show_menu(uid, page["title"], folders + files, 0)
         return
 
     if text == "📁 Торги":
         page = sources[1]
+        section_id = db_save_section(page["title"])
         folders, files = parse(page["source"])
-        state["history"] = [{"title": page["title"], "source": page["source"]}]
+        db_save_items(section_id, None, folders + files)
+        db_save_history(uid, "open_section")
+        state["section_id"] = section_id
+        state["current_subsection_id"] = None
+        state["history"] = [{"title": page["title"], "source": page["source"], "subsection_id": None}]
         show_menu(uid, page["title"], folders + files, 0)
         return
 
     if text == "⬅️ Назад":
         h = state.get("history", [])
         if len(h) <= 1:
-            user_state[uid] = {"items": [], "history": [], "page": 0, "map": {}, "title": ""}
+            user_state[uid] = {"items": [], "history": [], "page": 0, "map": {}, "title": "", "section_id": None, "current_subsection_id": None}
             send(uid, "🏠 Главное Меню", section_menu())
             return
         h.pop()
         last = h[-1]
+        state["current_subsection_id"] = last.get("subsection_id")
         folders, files = parse(last["source"])
+        db_save_items(state.get("section_id"), state.get("current_subsection_id"), folders + files)
         show_menu(uid, last["title"], folders + files, 0)
         return
 
@@ -188,13 +259,22 @@ def handle(uid, text):
 
     item = state.get("map", {}).get(text)
     if not item:
-        return  
+        return
+
     url = abs_url(item["url"])
+
     if item["type"] == "folder":
+        section_id = state.get("section_id")
+        parent_id = state.get("current_subsection_id")
+        subsection_id = db_save_subsection(section_id, parent_id, item["title"], url, "folder")
         folders, files = parse([{"url": url}])
-        state["history"].append({"title": item["title"], "source": [{"url": url}]})
+        db_save_items(section_id, subsection_id, folders + files)
+        db_save_history(uid, "open_folder", subsection_id=subsection_id)
+        state["history"].append({"title": item["title"], "source": [{"url": url}], "subsection_id": subsection_id})
+        state["current_subsection_id"] = subsection_id
         show_menu(uid, item["title"], folders + files, 0)
         return
+
     html = fetch(url)
     desc_parts, links = [], []
     if html:
@@ -211,13 +291,20 @@ def handle(uid, text):
                     u = abs_url(a["href"])
                     if u not in links:
                         links.append(u)
+
+    section_id = state.get("section_id")
+    parent_id = state.get("current_subsection_id")
+    subsection_id = db_save_subsection(section_id, parent_id, item["title"], url, "file")
+    doc_id = db_save_document(subsection_id, item["title"], url, "\n".join(desc_parts))
+    db_save_history(uid, "open_document", subsection_id=subsection_id, document_id=doc_id)
+
     msg = f"📎 {item['title']}\n\n{url}"
     if desc_parts:
         msg += "\n\n📄 Описание страницы:\n" + "\n".join(desc_parts)
     if links:
         msg += "\n\n🔗 Ссылки на документы в тексте:\n" + "\n".join(links)
     send(uid, msg)
-    
+
 for event in longpoll.listen():
     if event.type == VkEventType.MESSAGE_NEW and event.to_me:
         handle(event.user_id, event.text.strip())
