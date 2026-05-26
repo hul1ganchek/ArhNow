@@ -1,6 +1,6 @@
 import sqlite3
 
-db_name = "Storage.db"
+db_name = "ArhNow.db"
 
 def db_conn():
     conn = sqlite3.connect(db_name)
